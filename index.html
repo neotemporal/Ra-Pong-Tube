@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>TOMB BALL · tomb pong</title>
+<style>
+  :root{
+    --sand-hi:#e8c88f;
+    --sand:#d9b478;
+    --sand-md:#b98e54;
+    --sand-dk:#8a6236;
+    --mortar:#4a3016;
+    --ink:#2e1b08;
+    --gold:#f4c542;
+    --gold-hi:#ffe9a8;
+    --torch:#e8742c;
+    --void:#120a04;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;background:var(--void);overflow:hidden;cursor:none;
+    font-family:"Courier New",Courier,monospace;
+    overscroll-behavior:none;touch-action:none;
+    -webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.22) 0 2px, transparent 2px 4px),
+      radial-gradient(circle at 50% 45%, #241405 0%, #120a04 70%)}
+  canvas{display:block;touch-action:none;
+    image-rendering:pixelated;image-rendering:crisp-edges}
+
+  /* ---- carved stone tablets ------------------------------------------- */
+  .tablet{
+    background:linear-gradient(180deg,var(--sand-hi) 0%,var(--sand) 40%,var(--sand-md) 100%);
+    border:3px solid;
+    border-color:var(--sand-hi) var(--sand-dk) var(--mortar) var(--sand-hi);
+    box-shadow:
+      inset 0 2px 0 rgba(255,255,255,.35),
+      inset 0 -3px 0 rgba(74,48,22,.55),
+      0 4px 0 var(--mortar),
+      0 8px 14px rgba(0,0,0,.7);
+    color:var(--ink);
+    text-shadow:0 1px 0 rgba(255,255,255,.4);
+    letter-spacing:.14em;
+  }
+  #hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:center;
+    gap:10px;pointer-events:none;font-weight:bold;font-size:13px;text-transform:uppercase}
+  #hud .tablet{padding:7px 14px 6px}
+  #hud b{color:#7a1f0c;text-shadow:0 1px 0 rgba(255,255,255,.45)}
+
+  #msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    pointer-events:none}
+  #msg .tablet{max-width:min(84vw,420px);padding:22px 26px 20px;text-align:center}
+  #title{
+    font-size:clamp(26px,6.5vw,44px);font-weight:bold;letter-spacing:.1em;
+    color:var(--gold);
+    text-shadow:
+      0 1px 0 var(--gold-hi),
+      0 -1px 0 #7a5410,
+      2px 2px 0 var(--mortar),
+      4px 4px 0 rgba(0,0,0,.55);
+    margin-bottom:10px;
+  }
+  #sub{font-size:12px;font-weight:bold;text-transform:uppercase;margin-bottom:14px;
+    color:var(--ink)}
+  #go{
+    display:inline-block;padding:8px 16px;font-weight:bold;font-size:12px;
+    text-transform:uppercase;letter-spacing:.12em;color:var(--ink);
+    background:linear-gradient(180deg,var(--gold-hi),var(--gold) 45%,#c99a1e);
+    border:3px solid;border-color:#fff3cf #8a6a10 #6d520b #ffe9a8;
+    box-shadow:0 3px 0 var(--mortar),0 6px 10px rgba(0,0,0,.6);
+    animation:pulse 1.2s steps(2) infinite;
+  }
+  @keyframes pulse{50%{filter:brightness(.82)}}
+  .glyphs{margin-top:12px;font-size:15px;letter-spacing:.6em;color:var(--sand-dk);
+    text-shadow:0 1px 0 rgba(255,255,255,.35)}
+  .hidden{display:none!important}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c"></canvas></div>
+
+<div id="hud">
+  <span class="tablet">orbs <b id="score">0</b></span>
+  <span class="tablet">best <b id="best">0</b></span>
+</div>
+
+<div id="msg">
+  <div class="tablet">
+    <div id="title">TOMB BALL</div>
+    <div id="sub">guard the shaft</div>
+    <span id="go">tap to play</span>
+    <div class="glyphs">☥ &#x13080; ☥ &#x131CB; ☥</div>
+  </div>
+</div>
+
+<script>
+// ===== display canvas + low-res backbuffer (the 8-bit trick) ==============
+const cv  = document.getElementById('c');
+const dctx= cv.getContext('2d');
+const buf = document.createElement('canvas');
+const g   = buf.getContext('2d');
+const $ = id => document.getElementById(id);
+
+const LOW = 384;                 // internal pixel resolution — the whole game lives here
+let VIEW;                        // on-screen size
+let CX, CY, RIM;
+function resize(){
+  VIEW = Math.min(window.innerWidth, window.innerHeight);
+  cv.width = cv.height = VIEW;
+  buf.width = buf.height = LOW;
+  CX = LOW/2; CY = LOW/2;
+  RIM = LOW * 0.44;
+  dctx.imageSmoothingEnabled = false;
+  refreshRect();
+}
+window.addEventListener('resize', resize);
+
+// ===== perspective model (unchanged from the working build) ===============
+const DEPTH = 18;
+const FOCAL = 6;
+function depthScale(z){ return FOCAL / (FOCAL + z); }
+function project(angle, z, wallFrac){
+  const k = depthScale(z);
+  const r = RIM * k * wallFrac;
+  return { x: CX + Math.cos(angle)*r, y: CY + Math.sin(angle)*r, k };
+}
+function ballWall(z){ return 0.86 * (1 - z/DEPTH); }
+
+// ===== game state ==========================================================
+let state = 'menu';
+let score = 0, best = 0;
+let paddleAng = -Math.PI/2;
+const PADDLE_HALF = 0.42;
+const BASE_SPEED = 0.16;
+const ball = { ang:0, z:DEPTH, vz:-1, spin:0, speed:BASE_SPEED };
+function reset(){
+  score = 0;
+  ball.ang = Math.random()*Math.PI*2;
+  ball.z = DEPTH; ball.vz = -1; ball.spin = 0; ball.speed = BASE_SPEED;
+}
+
+// ===== input (window-wide, cached rect, snap-on-press) =====================
+let targetAng = paddleAng;
+let rect;
+function refreshRect(){ rect = cv.getBoundingClientRect(); }
+window.addEventListener('scroll', refreshRect, {passive:true});
+
+function pointerAng(cx0, cy0){
+  const x = cx0 - rect.left - VIEW/2;
+  const y = cy0 - rect.top  - VIEW/2;
+  return Math.atan2(y, x);
+}
+let dragging = false;
+function onDown(e){
+  refreshRect();
+  dragging = true;
+  targetAng = pointerAng(e.clientX, e.clientY);
+  paddleAng = targetAng;
+  if(state!=='play') startGame();
+}
+function onMove(e){
+  if(!dragging) return;
+  targetAng = pointerAng(e.clientX, e.clientY);
+  if(e.cancelable) e.preventDefault();
+}
+window.addEventListener('pointerdown', onDown);
+window.addEventListener('pointermove', onMove, {passive:false});
+window.addEventListener('pointerup',     ()=> dragging=false);
+window.addEventListener('pointercancel', ()=> dragging=false);
+const keys = {};
+window.addEventListener('keydown', e=>{ keys[e.key]=true;
+  if((e.key===' '||e.key==='Enter') && state!=='play') startGame(); });
+window.addEventListener('keyup', e=>{ keys[e.key]=false; });
+
+function startGame(){
+  if(state==='play') return;
+  reset(); state='play';
+  $('msg').classList.add('hidden');
+}
+
+// ===== update ==============================================================
+function shortestAngleLerp(a,b,t){
+  let d = ((b - a + Math.PI*3) % (Math.PI*2)) - Math.PI;
+  return a + d*t;
+}
+function angDiff(a,b){ return Math.abs(((a-b+Math.PI*3)%(Math.PI*2))-Math.PI); }
+
+function update(dt){
+  if(keys['ArrowLeft'])  targetAng -= 0.06;
+  if(keys['ArrowRight']) targetAng += 0.06;
+  paddleAng = shortestAngleLerp(paddleAng, targetAng, 0.55);
+
+  if(state!=='play') return;
+
+  ball.ang += ball.spin;
+  ball.z += ball.vz * ball.speed * dt;
+
+  if(ball.z >= DEPTH){
+    ball.z = DEPTH - (ball.z - DEPTH);  // reflect the overshoot — no dead frame
+    ball.vz = -1;
+    ball.ang = Math.random()*Math.PI*2;
+    ball.spin = 0;
+  }
+  if(ball.z <= 0){
+    if(angDiff(ball.ang, paddleAng) < PADDLE_HALF){
+      ball.z = -ball.z; ball.vz = 1;    // reflect off the paddle — keeps motion continuous
+      ball.spin = 0;
+      score++;
+      // +1% of the base speed per catch: 100 catches = exactly 2x
+      ball.speed = BASE_SPEED * (1 + 0.01*score);
+      if(score>best) best=score;
+    } else {
+      state='dead';
+      $('title').textContent='ORB LOST';
+      $('sub').textContent=score+' returned';
+      $('go').textContent='tap to play again';
+      $('msg').classList.remove('hidden');
+    }
+  }
+}
+
+// ===== rendering ===========================================================
+// deterministic per-brick hash so the masonry doesn't shimmer frame to frame
+function hash(i,j){
+  let h = (i*374761393 + j*668265263) | 0;
+  h = (h ^ (h>>13)) * 1274126177 | 0;
+  return ((h ^ (h>>16)) >>> 0) / 4294967295;
+}
+// sandstone ramp, brightened by torchlight k and per-brick variance v
+function brickColor(k, v, flick){
+  const L = (0.18 + 0.82*k) * flick;            // torch falloff into the depths
+  const r = Math.round((150 + 70*v) * L + 30*L);
+  const gc= Math.round((108 + 52*v) * L + 18*L);
+  const b = Math.round(( 62 + 30*v) * L);
+  return `rgb(${r},${gc},${b})`;
+}
+
+const COURSES = 16;              // rings of masonry down the shaft
+const BRICKS  = 18;              // bricks per course
+
+// The shaft is statically lit, so render it once to its own layer
+// and just blit it every frame.
+const shaftBuf = document.createElement('canvas');
+const sg = shaftBuf.getContext('2d');
+function buildShaft(){
+  shaftBuf.width = shaftBuf.height = LOW;
+  sg.fillStyle='#120a04';
+  sg.fillRect(0,0,LOW,LOW);
+  for(let i=0;i<COURSES;i++){
+    const z0 = (i    /COURSES)*DEPTH;
+    const z1 = ((i+1)/COURSES)*DEPTH;
+    const k0 = depthScale(z0), k1 = depthScale(z1);
+    const r0 = RIM*k0, r1 = RIM*k1;
+    const off = (i%2) * (Math.PI/BRICKS);       // stagger alternate courses
+    for(let j=0;j<BRICKS;j++){
+      const a0 = off + (j    /BRICKS)*Math.PI*2;
+      const a1 = off + ((j+1)/BRICKS)*Math.PI*2;
+      const v  = hash(i,j);
+      sg.beginPath();
+      sg.arc(CX,CY,r0,a0,a1);
+      sg.arc(CX,CY,r1,a1,a0,true);
+      sg.closePath();
+      sg.fillStyle = brickColor((k0+k1)/2, v, 1);
+      sg.fill();
+      // mortar joints — chunky dark lines
+      sg.strokeStyle = '#3a2410';
+      sg.lineWidth = Math.max(1, 2.2*k0);
+      sg.stroke();
+      // top-edge highlight on near courses: skeuomorphic bevel
+      if(k0 > 0.45){
+        sg.beginPath();
+        sg.arc(CX,CY,r0-1,a0+0.02,a1-0.02);
+        sg.strokeStyle = `rgba(255,236,180,${0.25*k0})`;
+        sg.lineWidth = 1;
+        sg.stroke();
+      }
+    }
+  }
+  // the pit at the bottom of the shaft
+  const rp = RIM*depthScale(DEPTH);
+  sg.beginPath(); sg.arc(CX,CY,rp,0,Math.PI*2);
+  sg.fillStyle='#0a0502'; sg.fill();
+  // steady gold glimmer from the tomb below
+  sg.beginPath(); sg.arc(CX,CY,rp*0.5,0,Math.PI*2);
+  sg.fillStyle='rgba(244,197,66,0.13)';
+  sg.fill();
+}
+
+function drawPaddle(){
+  const a0 = paddleAng - PADDLE_HALF;
+  const a1 = paddleAng + PADDLE_HALF;
+  const dead = state==='dead';
+  // shadow pass
+  g.beginPath(); g.arc(CX,CY,RIM-2,a0,a1);
+  g.strokeStyle='rgba(0,0,0,.55)'; g.lineWidth=13; g.stroke();
+  // red body
+  g.beginPath(); g.arc(CX,CY,RIM-4,a0,a1);
+  g.strokeStyle = dead ? '#3a1008' : '#7a1408';
+  g.lineWidth=11; g.stroke();
+  g.beginPath(); g.arc(CX,CY,RIM-6,a0,a1);
+  g.strokeStyle = dead ? '#5c1c10' : '#c82c1c';
+  g.lineWidth=7; g.stroke();
+  // top highlight
+  g.beginPath(); g.arc(CX,CY,RIM-8,a0+0.03,a1-0.03);
+  g.strokeStyle = dead ? '#7a2c1a' : '#ff8a6a';
+  g.lineWidth=2; g.stroke();
+  // segment notches — riveted metal band feel
+  const segs=5;
+  for(let s=1;s<segs;s++){
+    const a = a0 + (a1-a0)*(s/segs);
+    const p1 = project(a,0,0.955), p2 = project(a,0,1.0);
+    g.beginPath(); g.moveTo(p1.x,p1.y); g.lineTo(p2.x,p2.y);
+    g.strokeStyle='#4a0c04'; g.lineWidth=2; g.stroke();
+  }
+}
+
+function drawBall(){
+  const p = project(ball.ang, ball.z, ballWall(ball.z));
+  const rad = Math.max(2, Math.round(11*p.k));
+  // trail of embers
+  for(let t=1;t<=4;t++){
+    const tz = Math.min(DEPTH, Math.max(0, ball.z - ball.vz*t*0.8));
+    const tp = project(ball.ang, tz, ballWall(tz));
+    const tr = Math.max(1, Math.round(11*tp.k*(1-t*0.2)));
+    g.fillStyle=`rgba(232,116,44,${0.16*(1-t*0.2)})`;
+    g.fillRect(Math.round(tp.x-tr), Math.round(tp.y-tr), tr*2, tr*2);
+  }
+  // sun orb — chunky pixel disc, no gradients (keeps it 8-bit)
+  const x = Math.round(p.x), y = Math.round(p.y);
+  g.fillStyle='#7a3a10';
+  g.beginPath(); g.arc(x,y,rad+1,0,Math.PI*2); g.fill();
+  g.fillStyle='#f4c542';
+  g.beginPath(); g.arc(x,y,rad,0,Math.PI*2); g.fill();
+  g.fillStyle='#ffe9a8';
+  g.beginPath(); g.arc(x-rad*0.3,y-rad*0.3,Math.max(1,rad*0.45),0,Math.PI*2); g.fill();
+}
+
+function render(){
+  g.drawImage(shaftBuf, 0, 0);
+  if(state!=='menu') drawBall();
+  drawPaddle();
+  // blit lowres -> screen, nearest-neighbour
+  dctx.imageSmoothingEnabled = false;
+  dctx.clearRect(0,0,VIEW,VIEW);
+  dctx.drawImage(buf, 0,0,LOW,LOW, 0,0,VIEW,VIEW);
+  $('score').textContent=score;
+  $('best').textContent=best;
+}
+
+// ===== loop ================================================================
+let last=performance.now();
+function frame(now){
+  const dt = Math.min(2.5,(now-last)/16.67); last=now;
+  update(dt);
+  render();
+  requestAnimationFrame(frame);
+}
+resize();
+buildShaft();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
