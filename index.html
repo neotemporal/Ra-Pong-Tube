@@ -18,7 +18,7 @@
     --void:#120a04;
   }
   *{margin:0;padding:0;box-sizing:border-box}
-  html,body{height:100%;background:var(--void);overflow:hidden;cursor:none;
+  html,body{height:100%;background:var(--void);overflow:hidden;cursor:crosshair;
     font-family:"Courier New",Courier,monospace;
     overscroll-behavior:none;touch-action:none;
     -webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}
@@ -160,9 +160,11 @@ function onDown(e){
   if(state!=='play') startGame();
 }
 function onMove(e){
-  if(!dragging) return;
+  // A mouse moves the paddle at all times. A finger must touch the screen first.
+  const isMouse = e.pointerType === 'mouse';
+  if(!isMouse && !dragging) return;
   targetAng = pointerAng(e.clientX, e.clientY);
-  if(e.cancelable) e.preventDefault();
+  if(!isMouse && e.cancelable) e.preventDefault();
 }
 window.addEventListener('pointerdown', onDown);
 window.addEventListener('pointermove', onMove, {passive:false});
@@ -189,7 +191,7 @@ function angDiff(a,b){ return Math.abs(((a-b+Math.PI*3)%(Math.PI*2))-Math.PI); }
 function update(dt){
   if(keys['ArrowLeft'])  targetAng -= 0.06;
   if(keys['ArrowRight']) targetAng += 0.06;
-  paddleAng = shortestAngleLerp(paddleAng, targetAng, 0.55);
+  paddleAng = shortestAngleLerp(paddleAng, targetAng, 0.65);
 
   if(state!=='play') return;
 
